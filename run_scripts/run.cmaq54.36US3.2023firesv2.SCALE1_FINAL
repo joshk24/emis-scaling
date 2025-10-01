@@ -1,0 +1,731 @@
+#!/bin/csh
+#SBATCH --partition=ord
+#SBATCH --time=72:00:00
+#SBATCH --ntasks=128
+#SBATCH --cpus-per-task=1
+#SBATCH --nodes=4
+#SBATCH --account=mod3dev
+#SBATCH --export=NONE
+#SBATCH -J SCALE1_FINAL
+#SBATCH -o slurm.SCALE1_FINAL.%j
+#SBATCH -e slurm.SCALE1_FINAL.%j
+#SBATCH --constraint=cascadelake
+
+module purge
+module load intel/21.4
+module load intelmpi/21.4
+module load netcdf/4.8.1
+module load ioapi/3.2
+module load hdf5/1.10.8
+module load pnetcdf/1.12.3
+module load nco/5.1.4
+
+setenv NPROCS 128
+setenv NPCOL_NPROW "8 16"
+
+#HS this case includes: CMAQv5.4, M3DRY, 36US3 domain, 2023 NOAA met, 2023 NASA BC, 2018gg anthro emis using reperesentative Tue, Sat, and Sun for each month, inline BEIS4, second version of fire emissions from James Beidler, NVPOA, no pcSOA
+setenv M3CASE SCALE1_FINAL
+setenv ICBCCASE  
+setenv ECASE 
+setenv GRID 36US3
+setenv NZ 35
+setenv VERSION CMAQv54_cb6r5_ae7_aq
+
+#HS update to RHEL8 executable from Colleen
+setenv EXEC CCTM_v54_GSI.exe
+setenv EXEDIR /work/MOD3DEV/jkumm/cmaq/cmaq_v54_assimruns/CCTM/scripts/BLD_CCTM_v54_GSI_intel21.4_i/ 
+setenv WORKDIR `realpath ./`      #> Working Directory. Where the runscript is.
+#setenv OUTDIR `realpath ../output/2023fires.v2/${M3CASE}/`
+setenv OUTDIR `realpath ../output/2023fires.v2/${M3CASE}/`
+setenv LOGDIR  ${OUTDIR}/LOGS     #> Log Directory Location
+mkdir -p $LOGDIR
+
+#-----------------------------------------------------------------#
+# setting assimilation file paths and directories
+setenv DOASSIM F # [ options: T | F ], T if using GSI
+setenv ASSIMSCRIPT `realpath assim_update.sh` 
+
+#-----------------------------------------------------------------#
+
+# set start and end dates
+set TID = ${1} # set in command line
+set firstday = 2023121
+#set firstday = 2023244 # for one day test!
+
+if ($TID == 0) then
+   echo ""
+   echo "ONE-DAY simulation selected [0]"
+   set start_date = ${firstday}
+   set end_date = ${firstday}
+else if ($TID == 1) then
+   echo ""
+   echo "First-half simulation selected [1]"
+   set start_date = 2023121
+   set end_date = 2023181
+else if ($TID == 2) then
+   echo ""
+   echo "Second-half simulation selected [2]"
+   set start_date = 2023182
+   set end_date = 2023273
+else if ($TID == 3) then
+   echo ""
+   echo "FULL simulation selected [3]"
+   set start_date = 2023121
+   set end_date = 2023273
+else if ($TID == 4) then
+   echo ""
+   echo "TWO WEEK simulation selected [4]"
+   set start_date = 2023121
+   set end_date = 2023134
+else if ($TID == 5) then
+   echo ""
+   echo "MAY 2023 simulation selected [5]"
+   set start_date = 2023121
+   set end_date = 2023151
+else if ($TID == 6) then
+   echo ""
+   echo "JUNE 2023 simulation selected [6]"
+   set start_date = 2023152
+   set end_date = 2023181
+else if ($TID == 7) then
+   echo ""
+   echo "JULY 2023 simulation selected [7]"
+   set start_date = 2023182
+   set end_date = 2023212
+else if ($TID == 8) then
+   echo ""
+   echo "AUGUST 2023 simulation selected [8]"
+   set start_date = 2023213
+   set end_date = 2023243
+else if ($TID == 9) then
+   echo ""
+   echo "SEPTEMBER 2023 simulation selected [9]"
+   set start_date = 2023244
+   set end_date = 2023273
+else if ($TID >= 10) then # allow you to type in custom start and end dates on command line
+   echo ""
+   echo "CUSTOM date range detected"
+   set start_date = ${1}
+   set end_date = ${2}
+endif
+
+# program terminates if it does not receive and start and end date
+if (! $start_date || ! $end_date) then
+  echo "ERROR: start_date or end_date was not defined"
+  echo "EXITING..."
+  exit 1
+endif
+
+echo "Start date set to : " $start_date
+echo "End date set to : " $end_date
+
+# setting NEW_START variable
+if ($start_date == $firstday) then
+   setenv NEW_START TRUE
+else
+   setenv NEW_START FALSE
+endif
+
+echo "NEW_START set to $NEW_START"
+	
+
+
+set today = $start_date
+
+#--------------------------------------------------------------#
+while ($today <= $end_date )
+
+set STDATE = $today
+echo STDATE $STDATE
+set GDAY = `python -c "import datetime; print(datetime.datetime.strptime('${today}', '%Y%j').strftime('%Y%m%d'))"`
+echo GDAY $GDAY
+set YYYY = `echo $GDAY | cut -c1-4`
+set YY = `echo $GDAY | cut -c3-4`
+set MM = `echo $GDAY | cut -c5-6`
+set DD = `echo $GDAY | cut -c7-8`
+
+set GS_DAY = $YY$MM$DD
+
+
+ @ YESTERDAY = $STDATE - 1
+ if ($YESTERDAY == 2005000) then
+ set YESTERDAY = 2004366
+ endif
+
+set YDAY = `python -c "import datetime; print(datetime.datetime.strptime('${YESTERDAY}', '%Y%j').strftime('%Y%m%d'))"`
+echo YDAY $YDAY
+set YESTERDAY_MM = `echo $YDAY | cut -c5-6`
+set YESTERDAY_DD = `echo $YDAY | cut -c7-8`
+
+ if ($STDATE < 2021001) then
+  set XDATE = 20210101
+  set XDATE2 = 20190101
+  set XDATE3 = 20190101
+ else
+  set XDATE = $GDAY
+  set XDATE2 = 2019${MM}15
+  set XDATE3 = 2018${MM}15
+ endif
+
+
+#-----------------------------------------------------------------#
+
+setenv APPL $VERSION        #no idea why this is needed but it must be set for the model to run
+
+#> set output file name extensions
+setenv CTM_APPL $VERSION.${GRID}.$NZ.${M3CASE}
+
+rm CTM_LOG_*.${CTM_APPL}  #delete existing log files so the model keeps running
+
+rm ${OUTDIR}/CCTM_DESID1_*_${CTM_APPL}.nc #delete existing unfiled emission diag files that may mess up run
+
+
+# -----------------------------------------------------------
+setenv STTIME 000000        # beginning GMT time (HHMMSS)
+setenv NSTEPS 240000        # time duration (HHMMSS) for this run
+setenv TSTEP 010000         # output time step interval (HHMMSS)
+setenv ASSIMTSTEP 010000    # JTK because ASSIMUTIL module requires TSTEP
+
+setenv CTM_MINSYNC 1        # max/min sync time step (sec)
+setenv CTM_MAXSYNC 360      # max/min sync time step (sec)
+setenv SIGMA_SYNC_TOP 0.7   # top sigma level thru which sync step determined [0.7]
+setenv CTM_ADV_CFL 0.95      #> max CFL [ default: 0.75]
+setenv ACONC_END_TIME N     #> override default beginning time average conc timestamp [ N|F ]
+
+setenv CTM_DIAG_LVL 1       # Toggle Diagnostic Mode which will print verbose information
+setenv PRINT_PROC_TIME N
+setenv STDOUT T
+setenv CTM_SYMPROC N        # symmetric processing [ T | Y | F | N ]
+setenv FL_ERR_STOP F        # stop on inconsistent input file [ T | Y | F | N ]
+setenv IOAPI_LOG_WRITE F    # turn off excess WRITE3 logging
+setenv PROMPTFLAG F         # turn off IOAPI prompt file interactive mode
+setenv IOAPI_OFFSET_64 YES  #> support needed for large timestep records (>2GB/timestep record) [ NO ]
+setenv IOAPI_CHECK_HEADERS N
+setenv CTM_EMISCHK F        #stop model if certain emission species not found
+setenv CTM_CKSUM N           #> checksum report [ default: Y ]
+
+#> MPI Optimization Flags
+setenv MPI_SM_POOL 16000     #> increase shared memory pool in case many MPI_SEND headers
+setenv MP_EAGER_LIMIT 65536  #> set MPI message passing buffer size to max
+setenv MP_SINGLE_THREAD yes  #> optimize for single threaded applications [ default: no ]
+setenv MP_STDOUTMODE ordered #> order output by the processor ID
+setenv MP_LABELIO yes        #> label output by processor ID [ default: no ]
+setenv MP_SHARED_MEMORY yes  #> force use of shared memory for tasks on same node [ default: no ]
+setenv MP_ADAPTER_USE shared #> share the MP adapter with other jobs
+setenv MP_CPU_USE multiple   #> share the node with multiple users/jobs
+setenv MP_CSS_INTERRUPT yes  #> specify whether arriving packets generate interrupts [ default: no ]
+
+#> Science Options
+###HS ask Kirk why OCEAN_CHEM was turned off . . . do I need any additional input files beforing turing OCEAN_CHEM on???
+#HS ask sarwar if this requires certain files or try with it on and see if it runs
+setenv CTM_OCEAN_CHEM N      #> Flag for ocean halogen chemistry and sea spray aerosol emissions [ default: Y ]
+setenv CTM_WB_DUST N         #> use inline windblown dust emissions [ default: Y ]
+#HS use climatalogical average LNO scaling to MCIP
+setenv CTM_LTNG_NO Y         #> turn on lightning NOx [ default: N ]
+setenv LTNGNO InLine         # use inline lightning
+setenv USE_NLDN N            # don't use NLDN
+setenv LTNGPARMS_FILE  /work/MOD3EVAL/dkj/LTNG/OAQPS/WWLLNs_36US3/2022/LTNG_AllParms_36US3.ioapi #file that provides gridded data to allow LNO scaling to MCIP vars
+setenv KZMIN Y               #> use Min Kz option in edyintb [ default: Y ],
+                             #>    otherwise revert to Kz0UT
+setenv PX_VERSION Y          #> WRF PX LSM
+setenv CLM_VERSION N         #> WRF CLM LSM
+setenv NOAH_VERSION N        #> WRF NOAH LSM
+setenv CTM_ABFLUX N          #> ammonia bi-directional flux for in-line deposition
+                             #>    velocities [ default: N ]
+setenv CTM_BIDI_FERT_NH3 F   #> subtract fertilizer NH3 from emissions because it will be handled
+                             #>    by the BiDi calculation [ default: Y ]
+setenv CTM_HGBIDI N          #> mercury bi-directional flux for in-line deposition
+                             #>    velocities [ default: N ]
+setenv CTM_SFC_HONO Y        #> surface HONO interaction [ default: Y ]
+setenv CTM_GRAV_SETL Y       #> vdiff aerosol gravitational sedimentation [ default: Y ]
+setenv CTM_BIOGEMIS_BE Y     #> calculate in-line biogenic emissions [ default: N ]
+setenv CTM_BIOGEMIS_MG N     #> turns on MEGAN biogenic emission [ default: N ]
+setenv USE_MEGAN_LAI N       #> use separate LAI input file [ default: N ]
+setenv BDSNP_MEGAN N         #> turns on BDSNP soil NO emissions [ default: N ]
+
+
+setenv IC_AERO_M2WET F       #> Specify whether or not initial condition aerosol size distribution
+                             #>    is wet or dry [ default: F = dry ]
+setenv BC_AERO_M2WET F       #> Specify whether or not boundary condition aerosol size distribution
+                             #>    is wet or dry [ default: F = dry ]
+setenv IC_AERO_M2USE F       #> Specify whether or not to use aerosol surface area from initial
+                             #>    conditions [ default: T = use aerosol surface area  ]
+setenv BC_AERO_M2USE F       #> Specify whether or not to use aerosol surface area from boundary
+                             #>    conditions [ default: T = use aerosol surface area  ]
+
+
+#> Diagnostic Output Flags
+setenv CTM_CKSUM Y           #> checksum report [ default: Y ]
+setenv CLD_DIAG N            #> cloud diagnostic file [ default: N ]
+
+setenv CTM_PHOTDIAG N        #> photolysis diagnostic file [ default: N ]
+setenv NLAYS_PHOTDIAG "1"    #> Number of layers for PHOTDIAG2 and PHOTDIAG3 from
+                             #>     Layer 1 to NLAYS_PHOTDIAG  [ default: all layers ]
+
+setenv CTM_SSEMDIAG N        #> sea-spray emissions diagnostic file [ default: N ]
+setenv CTM_DUSTEM_DIAG N     #> windblown dust emissions diagnostic file [ default: N ];
+                             #>     Ignore if CTM_WB_DUST = N
+setenv CTM_DEPV_FILE N       #> deposition velocities diagnostic file [ default: N ]
+setenv VDIFF_DIAG_FILE N     #> vdiff & possibly aero grav. sedimentation diagnostic file [ default: N ]
+setenv LTNGDIAG N            #> lightning diagnostic file [ default: N ]
+setenv B3GTS_DIAG N          #> BEIS mass emissions diagnostic file [ default: N ]
+setenv CTM_WVEL Y            #> save derived vertical velocity component to conc
+                             #>    file [ default: Y ]
+
+setenv CTM_AERDIAG N        # aerosol diagnostic file [ T | Y | F | N ]
+setenv CTM_AVISDIAG N       # visibilty diagnostic avg file [N]
+setenv CTM_APMDIAG N        # aerosol diagnostic avg file [N]
+setenv CTM_PMDIAG N          #> Instantaneous Aerosol Diagnostic File [ default: Y ]
+setenv CTM_SSEMDIAG N       # sea-salt emissions diagnostic file [N]
+setenv EMISDIAG F
+
+#-----------------------------------------------------------#
+#> Set Output String and Propagate Model Configuration Documentation
+echo ""
+echo "Set up input and output files for Day ${GDAY}."
+
+#> set output file name extensions
+#setenv CTM_APPL $VERSION.${GRID}.$NZ.${M3CASE}
+
+#> Copy Model Configuration To Output Folder
+if ( ! -d "$OUTDIR" ) mkdir -p $OUTDIR
+cp $EXEDIR/CCTM_v54_GSI.cfg $OUTDIR/CCTM_${CTM_APPL}.cfg
+
+# set floor file (neg concs)
+setenv FLOOR_FILE $OUTDIR/$CTM_APPL.FLOOR.$STDATE
+
+setenv CTM_BUDGET  $OUTDIR/$CTM_APPL.BUDGET.$STDATE
+setenv CTM_CONC_1 $OUTDIR/$CTM_APPL.CONC.$STDATE
+setenv S_CGRID $OUTDIR/$CTM_APPL.CGRID.$STDATE
+setenv A_CONC_1 $OUTDIR/$CTM_APPL.ACONC.$STDATE
+setenv MEDIA_CONC $OUTDIR/$CTM_APPL.MEDIA_CONC.$STDATE
+
+# Added for assimilation
+setenv CTM_ASSIM_1 $OUTDIR/$CTM_APPL.ASSIM.$STDATE
+
+rm -rf $CTM_BUDGET
+rm -rf $CTM_CONC_1
+rm -rf $S_CGRID
+rm -rf $A_CONC_1
+rm -rf $MEDIA_CONC
+rm -rf $FLOOR_FILE
+
+setenv CTM_DRY_DEP_1 $OUTDIR/$CTM_APPL.DRYDEP.$STDATE
+setenv CTM_WET_DEP_1 $OUTDIR/$CTM_APPL.WETDEP1.$STDATE
+setenv CTM_WET_DEP_2 $OUTDIR/$CTM_APPL.WETDEP2.$STDATE
+setenv CTM_DEPV_DIAG $OUTDIR/$CTM_APPL.DEPV.$STDATE
+setenv CTM_AELMO_1 $OUTDIR/$CTM_APPL.AELMO.$STDATE
+
+rm -rf $CTM_DRY_DEP_1
+rm -rf $CTM_WET_DEP_1
+rm -rf $CTM_WET_DEP_2
+rm -rf $CTM_DEPV_DIAG
+rm -rf $CTM_AELMO_1
+
+setenv CTM_AOD_1 $OUTDIR/$CTM_APPL.AOD.$STDATE
+setenv CTM_RJ_1 $OUTDIR/$CTM_APPL.PHOTDIAG1.$STDATE
+setenv CTM_RJ_2 $OUTDIR/$CTM_APPL.PHOTDIAG2.$STDATE
+setenv CTM_RJ_3 $OUTDIR/$CTM_APPL.PHOTDIAG3.$STDATE
+setenv CTM_VIS_1 $OUTDIR/$CTM_APPL.PMVIS.$STDATE
+setenv CTM_AVIS_1 $OUTDIR/$CTM_APPL.APMVIS.$STDATE
+setenv CTM_PMDIAG_1 $OUTDIR/$CTM_APPL.PMDIAG.$STDATE
+setenv CTM_APMDIAG_1 $OUTDIR/$CTM_APPL.APMDIAG.$STDATE
+setenv CTM_PT3D_DIAG $OUTDIR/$CTM_APPL.PT3D.$STDATE
+
+rm -rf $CTM_AOD_1
+rm -rf $CTM_RJ_1
+rm -rf $CTM_RJ_2
+rm -rf $CTM_RJ_3
+rm -rf $CTM_VIS_1
+rm -rf $CTM_AVIS_1
+rm -rf $CTM_AVIS_1
+rm -rf $CTM_PMDIAG_1
+rm -rf $CTM_APMDIAG_1
+rm -rf $CTM_PT3D_DIAG
+
+setenv CTM_IPR_1 $OUTDIR/$CTM_APPL.PA_1.$STDATE
+setenv CTM_IPR_2 $OUTDIR/$CTM_APPL.PA_2.$STDATE
+setenv CTM_IPR_3 $OUTDIR/$CTM_APPL.PA_3.$STDATE
+setenv CTM_IRR_1 $OUTDIR/$CTM_APPL.IRR_1.$STDATE
+setenv CTM_IRR_2 $OUTDIR/$CTM_APPL.IRR_2.$STDATE
+setenv CTM_IRR_3 $OUTDIR/$CTM_APPL.IRR_3.$STDATE
+
+setenv CTM_SSEMIS_1 $OUTDIR/$CTM_APPL.SSEMIS.$STDATE
+setenv CTM_DUST_EMIS_1 $OUTDIR/$CTM_APPL.DUSTEMIS.$STDATE
+
+rm -rf $CTM_SSEMIS_1
+rm -rf $CTM_DUST_EMIS_1
+
+# species for integral average conc and conc file
+setenv AVG_CONC_SPCS "ALL"
+setenv CONC_SPCS "NO2 NO FORM O3 CO "
+setenv ACONC_BLEV_ELEV " 1 1"
+setenv CONC_BLEV_ELEV " 1 ${NZ}"
+setenv NLAYS_PHOTDIAG "35"
+
+## input files and directories
+
+# horizontal grid defn
+setenv GRIDDESC /work/ROMO/lrt/cmaq/${GRID}/land/GRIDDESC
+setenv GRID_NAME $GRID
+
+# ocean mask file
+setenv OCEANpath /work/ROMO/lrt/cmaq/${GRID}/land
+setenv OCEANfile ssmask.$GRID.ncf
+setenv OCEAN_1 $OCEANpath/$OCEANfile
+ls -l $OCEAN_1
+
+## Inline photolysis
+setenv OMI /work/ROMO/lrt/cmaq/$GRID/misc/OMI_1979_to_2023aug.dat
+setenv CSQY_DATA /work/ROMO/users/kpc/cmaq/CMAQ54/CCTM/scripts/BLD_CCTM_v54_DDM3D_intel18.0/CSQY_DATA_cb6r5_ae7_aq
+setenv OPTICS_DATA /work/ROMO/users/kpc/cmaq/CMAQ54/CCTM/scripts/BLD_CCTM_v54_DDM3D_intel18.0/PHOT_OPTICS.dat
+
+#namellist files for species mapping
+setenv gc_matrix_nml /work/ROMO/users/kpc/cmaq/CMAQ54/CCTM/scripts/BLD_CCTM_v54_DDM3D_intel18.0/GC_cb6r5_ae7_aq.nml
+setenv ae_matrix_nml /work/ROMO/users/kpc/cmaq/CMAQ54/CCTM/scripts/BLD_CCTM_v54_DDM3D_intel18.0/AE_cb6r5_ae7_aq.nml
+setenv nr_matrix_nml /work/ROMO/users/kpc/cmaq/CMAQ54/CCTM/scripts/BLD_CCTM_v54_DDM3D_intel18.0/NR_cb6r5_ae7_aq.nml
+setenv tr_matrix_nml /work/ROMO/users/kpc/cmaq/CMAQ54/CCTM/scripts/BLD_CCTM_v54_DDM3D_intel18.0/Species_Table_TR_0.nml
+
+#setenv DESID_CTRL_NML /work/ROMO/users/kpc/cmaq/CMAQ54/CCTM/scripts/BLD_CCTM_v54_DDM3D_intel18.0/CMAQ_Control_DESID.nml
+setenv DESID_CTRL_NML /work/MOD3DEV/jkumm/EMBER/CMAQ/36US3/run/CMAQ_Control_DESID.nml
+#HS #### DESID namelist files is where you turn on and off PCSOA.  Here we use NVPOA and no pcSOA
+#setenv DESID_CHEM_CTRL_NML /work/ROMO/users/kpc/cmaq/CMAQ54/CCTM/scripts/BLD_CCTM_v54_DDM3D_intel18.0/CMAQ_Control_DESID_cb6r5_ae7_aq_NVOA.nml
+setenv DESID_CHEM_CTRL_NML /work/MOD3DEV/jkumm/EMBER/CMAQ/36US3/run/CMAQ_Control_DESID_cb6r5_ae7_aq_NOx_Scaled.nml
+#HS this is ELMO - create a version to use for my runs with desired outputs
+#setenv MISC_CTRL_NML /work/ROMO/lrt/cmaq/12US1/nml/CMAQ_Control_Misc.nml
+setenv MISC_CTRL_NML /work/MOD3DEV/jkumm/EMBER/CMAQ/36US3/run/CMAQ_Control_Misc.nml
+
+# JK path to region definition file (to be used for scale factor aggregation)
+setenv CMAQ_MASKS /work/MOD3DEV/jkumm/EMBER/CMAQ/36US3/run/final_scale_factors/SCALE1_FINAL/DAILY_SCALE_${GDAY}.nc
+
+## mcip files
+setenv METpath /work/MOD3DEV/jkumm/EMBER/CMAQ/36US3/input/mcip/
+echo "METpath"
+ls -ld $METpath
+
+setenv GRID_BDY_2D $METpath/aqm.t12z.grdbdy2d_${GDAY}.ncf
+echo "GRID_BDY_2D"
+ls -l $GRID_BDY_2D
+
+setenv GRID_CRO_2D $METpath/aqm.t12z.grdcro2d_${GDAY}.ncf
+echo "GRID_CRO_2D"
+ls -l $GRID_CRO_2D
+
+setenv GRID_DOT_2D $METpath/aqm.t12z.grddot2d_${GDAY}.ncf
+echo "GRID_DOT_2D"
+ls -l $GRID_DOT_2D
+
+setenv MET_CRO_2D $METpath/metcro2d_${GDAY}.ncf
+echo "MET_CRO_2D"
+ls -l $MET_CRO_2D
+
+setenv MET_DOT_3D $METpath/metdot3d_${GDAY}.ncf
+echo "MET_DOT_3D"
+ls -l $MET_DOT_3D
+
+setenv MET_CRO_3D $METpath/metcro3d_${GDAY}.ncf
+echo "MET_CRO_3D"
+ls -l $MET_CRO_3D
+
+setenv MET_BDY_3D $METpath/metbdy3d_${GDAY}.ncf
+echo "MET_BDY_3D"
+ls -l $MET_BDY_3D
+
+setenv LUFRAC_CRO $METpath/aqm.t12z.lufraccro_${GDAY}.ncf
+echo "LUFRAC_CRO"
+ls -l $LUFRAC_CRO
+
+setenv LAYER_FILE $MET_CRO_3D
+
+## generic emissions stuff
+# Allow CMAQ to use emissions files with dates that do not match the internal model date
+#HS when SYM_DATE is set to true for a particular emissions stream (i.e. GR_001, STK_002 etc.) then model does not require file date to match modeled day
+  setenv GR_EM_SYM_DATE_001 T
+  setenv GR_EM_SYM_DATE_002 T
+
+  setenv STK_EM_SYM_DATE_001 T
+  setenv STK_EM_SYM_DATE_002 T
+  setenv STK_EM_SYM_DATE_003 T  
+  setenv STK_EM_SYM_DATE_004 T
+  setenv STK_EM_SYM_DATE_005 T
+  setenv STK_EM_SYM_DATE_006 T
+  setenv STK_EM_SYM_DATE_007 T
+  setenv STK_EM_SYM_DATE_008 T
+  setenv STK_EM_SYM_DATE_009 T
+  setenv STK_EM_SYM_DATE_010 T
+
+#HS use iday file and 2018 emis from Kirk
+set iday = `grep ^$STDATE /work/ROMO/users/shn/EMBER/mergedates.2023to2018.txt`
+
+
+## emission gridded 2D file
+setenv AVG_EMIS_DIR /work/ROMO/users/shn/EMBER/avgemis_2023gf
+
+setenv N_EMIS_GR 2
+
+setenv GR_EMIS_LAB_001 ALL
+setenv GR_EMIS_001 /work/ROMO/pm_naaqs_2023/smoke_out/2018gg_18j/36US3/cmaq_cb6ae7/merged_nobeis_norwc/emis_mole_all_${iday[3]}_${GRID}_nobeis_norwc_2018gg_18j.ncf
+
+setenv GR_EMIS_LAB_002 RWC
+setenv GR_EMIS_002 /work/ROMO/pm_naaqs_2023/smoke_out/2018gg_18j/36US3/cmaq_cb6ae7/rwc/emis_mole_rwc_${iday[3]}_${GRID}_cmaq_cb6ae7_2018gg_18j.ncf
+
+echo "GR_EMIS_001"
+echo $GR_EMIS_001
+ls -l $GR_EMIS_001
+echo "GR_EMIS_002"
+echo $GR_EMIS_002
+ls -l $GR_EMIS_002
+
+## inline plume rise emissions
+#HS update N_EMIS_PT dependin on the number of pt emissions files used
+setenv N_EMIS_PT 09
+setenv PT3DDIAG N #optional 3d point source emissions file, normally set to n unless testing
+setenv LAYP_STTIME $STTIME
+setenv LAYP_NSTEPS $NSTEPS
+setenv LAYP_STDATE $STDATE
+
+setenv PTPATH /work/ROMO/pm_naaqs_2023/smoke_out/2018gg_18j/36US3/cmaq_cb6ae7
+
+#HS match LABS to those used in DESID namelist file
+#HS Kirk did not make average emis files for 2018 but instead used a single weekday (Tue), Sat, and Sun file from each month the represent emissions
+
+setenv STK_EMIS_LAB_001 NONEGU
+setenv STK_GRPS_001 $PTPATH/ptnonipm/stack_groups_ptnonipm_36US3_2018gg_18j.ncf
+setenv STK_EMIS_001 $PTPATH/ptnonipm/inln_mole_ptnonipm_${iday[3]}_36US3_cmaq_cb6ae7_2018gg_18j.ncf 
+echo "PT_EMIS_001"
+ls $STK_EMIS_001
+
+setenv STK_EMIS_LAB_002 PT_OILGAS
+setenv STK_GRPS_002 $PTPATH/pt_oilgas/stack_groups_pt_oilgas_36US3_2018gg_18j.ncf
+setenv STK_EMIS_002 $PTPATH/pt_oilgas/inln_mole_pt_oilgas_${iday[3]}_36US3_cmaq_cb6ae7_2018gg_18j.ncf 
+echo "PT_EMIS_002"
+ls $STK_EMIS_002
+
+setenv STK_EMIS_LAB_003 PT_OTH
+setenv STK_GRPS_003 $PTPATH/othpt/stack_groups_othpt_36US3_2018gg_18j.ncf
+setenv STK_EMIS_003 $PTPATH/othpt/inln_mole_othpt_${iday[3]}_36US3_cmaq_cb6ae7_2018gg_18j.ncf 
+echo "PT_EMIS_003"
+ls $STK_EMIS_003
+
+setenv STK_EMIS_LAB_004 CMV3
+setenv STK_GRPS_004 $PTPATH/cmv_c3_36/stack_groups_cmv_c3_36_36US3_2018gg_18j.ncf
+setenv STK_EMIS_004 $PTPATH/cmv_c3_36/inln_mole_cmv_c3_36_${iday[3]}_36US3_cmaq_cb6ae7_2018gg_18j.ncf
+echo "PT_EMIS_004"
+ls $STK_EMIS_004
+
+setenv STK_EMIS_LAB_005 CMV12
+setenv STK_GRPS_005 $PTPATH/cmv_c1c2_36/stack_groups_cmv_c1c2_36_36US3_2018gg_18j.ncf
+setenv STK_EMIS_005 $PTPATH/cmv_c1c2_36/inln_mole_cmv_c1c2_36_${iday[3]}_36US3_cmaq_cb6ae7_2018gg_18j.ncf
+echo "PT_EMIS_005"
+ls $STK_EMIS_005
+
+setenv STK_EMIS_LAB_006 EGU
+setenv STK_GRPS_006 $PTPATH/ptegu/stack_groups_ptegu_36US3_2018gg_18j.ncf
+setenv STK_EMIS_006 $PTPATH/ptegu/inln_mole_ptegu_${iday[3]}_36US3_cmaq_cb6ae7_2018gg_18j.ncf
+echo "PT_EMIS_006"
+ls $STK_EMIS_006
+
+#HS talk to Barron about how/whether to create average ag fires given different stack groups on each day
+#HS for now, leave off this source which mostly occurs outside of Apr-Jul time period
+#HS setenv STK_EMIS_LAB_007 PT_AGFIRES
+#HS setenv STK_GRPS_007 $PTPATH/ptagfire/stack_groups_ptagfire_2016${MM}${DD}_12US1_2016fj_16j.ncf
+#HS setenv STK_EMIS_007 $PTPATH/ptagfire/inln_mole_ptagfire_2016${MM}${DD}_12US1_cmaq_cb6ae7_2016fj_16j.ncf
+
+setenv STK_EMIS_LAB_007 PT_WILDFIRES
+setenv STK_GRPS_007 /work/ROMO/2023platform/smoke_out/2023pre/36US3/cmaq_cb6ae7/ptfire-wild/stack_groups_ptfire-wild_${GDAY}_36US3_2023pre.ncf
+setenv STK_EMIS_007 /work/ROMO/2023platform/smoke_out/2023pre/36US3/cmaq_cb6ae7/ptfire-wild/inln_mole_ptfire-wild_${GDAY}_36US3_cmaq_cb6ae7_2023pre.ncf
+echo "PT_EMIS_007"
+ls $STK_EMIS_007
+
+setenv STK_EMIS_LAB_008 PT_RXFIRES
+setenv STK_GRPS_008 /work/ROMO/2023platform/smoke_out/2023pre/36US3/cmaq_cb6ae7/ptfire-rx/stack_groups_ptfire-rx_${GDAY}_36US3_2023pre.ncf
+setenv STK_EMIS_008 /work/ROMO/2023platform/smoke_out/2023pre/36US3/cmaq_cb6ae7/ptfire-rx/inln_mole_ptfire-rx_${GDAY}_36US3_cmaq_cb6ae7_2023pre.ncf
+echo "PT_EMIS_008"
+ls $STK_EMIS_008
+
+#HS This is only Canada fires, no Mexico
+setenv STK_EMIS_LAB_009 PT_FIRES_MXCA
+setenv STK_GRPS_009 /work/ROMO/2023platform/smoke_out/2023pre/36US3/cmaq_cb6ae7/ptfire_canada/stack_groups_ptfire_canada_${GDAY}_36US3_2023pre.ncf
+setenv STK_EMIS_009 /work/ROMO/2023platform/smoke_out/2023pre/36US3/cmaq_cb6ae7/ptfire_canada/inln_mole_ptfire_canada_${GDAY}_36US3_cmaq_cb6ae7_2023pre.ncf
+echo "PT_EMIS_009"
+ls $STK_EMIS_009
+
+#HS end PT sectors
+echo "PT EMIS FILES"
+ls -l $STK_GRPS_001
+ls -l $STK_EMIS_001
+ls -l $STK_GRPS_002
+ls -l $STK_EMIS_002
+ls -l $STK_GRPS_003
+ls -l $STK_EMIS_003
+ls -l $STK_GRPS_004
+ls -l $STK_EMIS_004
+ls -l $STK_GRPS_005
+ls -l $STK_EMIS_005
+ls -l $STK_GRPS_006
+ls -l $STK_EMIS_006
+ls -l $STK_GRPS_007
+ls -l $STK_GRPS_007
+ls -l $STK_EMIS_008
+ls -l $STK_EMIS_008
+ls -l $STK_GRPS_009
+ls -l $STK_GRPS_009
+
+
+## source apportionment
+#> Integrated Source Apportionment Method (ISAM) Options
+#HS setenv CTM_ISAM Y
+setenv CTM_ISAM N
+setenv ISAM_O3_WEIGHTS 1
+setenv ISAM_NOX_CASE 2
+setenv ISAM_VOC_CASE 4
+setenv VOC_NOX_TRANS 0.35
+
+setenv SA_IOLIST /work/ROMO/finescale/cmaq/$GRID/nml/isam_control_noreg.txt
+setenv ISAM_REGIONS
+
+ setenv ISAM_BLEV_ELEV " 1 ${NZ}"
+ setenv AISAM_BLEV_ELEV " 1 1"
+
+ setenv SA_CONC_1 $OUTDIR/$CTM_APPL".SA_CONC".$STDATE
+ setenv SA_CGRID_1 $OUTDIR/$CTM_APPL".SA_CGRID".$STDATE
+ setenv SA_ACONC_1 $OUTDIR/$CTM_APPL".SA_ACONC".$STDATE
+ setenv SA_DD_1 $OUTDIR/$CTM_APPL".SA_DRYDEP".$STDATE
+ setenv SA_WD_1 $OUTDIR/$CTM_APPL".SA_WETDEP1".$STDATE
+
+rm -rf $SA_CONC_1 $SA_CGRID_1 $SA_ACONC_1 $SA_DD_1 $SA_WD_1
+
+## inline biogenics
+ if ($CTM_BIOGEMIS_BE == Y) then
+
+set IN_BEISpath =  /work/ROMO/lrt/cmaq/$GRID/biog
+set GSPROpath = $IN_BEISpath
+
+setenv GSPRO              $IN_BEISpath/gspro_biogenics_19nov2019_nf_v10.txt
+setenv BEIS_NORM_EMIS     /work/EMIS/users/jvukovic/smoke_v481/subsys/smoke/scripts/beis4_norm_emis.36US3.ncf
+setenv BIOSEASON          $IN_BEISpath/bioseason.$YYYY.36US3.ncf
+
+setenv BEIS_SOILOUT $OUTDIR/$CTM_APPL".SOILOUT".$STDATE
+setenv B3GTS_S $OUTDIR/$CTM_APPL".B3GTS_S".$STDATE
+rm -rf $B3GTS_S $BEIS_SOILOUT
+
+setenv BIOG_SPRO B10C6         #speciation profile for biogenics
+setenv BIOSW_YN Y              #use frost date switch
+setenv SUMMER_YN N             #use summer normalized emissions Y N
+setenv B3GTS_DIAG Y
+
+ls -l $BEIS_NORM_EMIS
+ls -l $BIOSEASON
+ls -l $GSPRO
+
+ endif
+
+
+## inline bi-di ammonia section
+ if ($CTM_ABFLUX == Y) then
+
+setenv E2C_SOIL  /work/ROMO/finescale/cmaq/4CALNEX1/bidi/ca4km_2acres_soil.nc
+setenv E2C_FERT  /work/ROMO/finescale/cmaq/4CALNEX1/bidi/ca4km_2acres_time${GDAY}.nc
+setenv BELD4_LU  /work/ROMO/finescale/cmaq/4CALNEX1/bidi/beld4_4CALNEX1i_output.new.ncf
+
+setenv CTM_DRY_DEP_MOS   $CTM_APPL".DRYDEP_MOS".$STDATE       
+setenv CTM_DEPV_MOS      $CTM_APPL".DVMOS".$STDATE            
+setenv CTM_DRY_DEP_FST   $CTM_APPL".DRYDEP_FST".$STDATE      
+setenv CTM_DEPV_FST      $CTM_APPL".DVFST".$STDATE           
+
+ endif
+
+
+## ICBC files
+setenv GC_BCpath /work/ROMO/bcon/GEOS-CF/${GRID}/${YYYY}/${MM}/${DD}
+
+if ($NEW_START == true || $NEW_START == TRUE ) then
+#setenv GC_ICpath /work/ROMO/bcon/GEOS-CF/${GRID}/${YYYY}/${MM}/${DD}/
+setenv GC_ICpath /work/MOD3DEV/jkumm/EMBER/CMAQ/36US3/output/2023fires.v2/ASSIM/
+#setenv GC_ICfile ICON_geoscf_cb6r3_ae7_36US3_2023-04-01T00_2023-04-01T00_1h.nc
+setenv GC_ICfile CMAQv54_cb6r5_ae7_aq.36US3.35.ASSIM.CGRID.$YESTERDAY
+setenv INITIAL_RUN Y #related to restart soil information file
+else
+setenv GC_ICpath  $OUTDIR
+setenv GC_ICfile  $CTM_APPL".CGRID".$YESTERDAY
+setenv INITIAL_RUN N
+setenv BEIS_SOILINP $OUTDIR/$CTM_APPL".SOILOUT".$YESTERDAY
+endif
+
+setenv INIT_CONC_1 $GC_ICpath/$GC_ICfile
+echo "IC File"
+ls -l $INIT_CONC_1
+setenv BNDY_CONC_1 $GC_BCpath/BCON_geoscf_cb6r3_ae7_36US3_2023-${MM}-${DD}T00_25h.nc
+ls -l $BNDY_CONC_1
+
+
+## DDM
+ setenv CTM_DDM3D N
+ setenv CTM_NPMAX 4  #number of parameters on input control file
+
+ setenv DDM3D_HIGH N     # allow higher-order sensitivity parameters [ T | Y | F | N ] (default is N/F)
+ setenv DDM3D_BCS F     # use sensitivity bc file for nested runs [ T | Y | F | N ] (default is N/F)
+
+# for the run control ...
+setenv CTM_STDATE $STDATE
+setenv CTM_STTIME $STTIME
+setenv CTM_RUNLEN $NSTEPS
+setenv CTM_TSTEP $TSTEP
+setenv CTM_PROGNAME $EXEC
+
+# ===================================================================
+#> Execution Portion
+# ===================================================================
+
+  #> Print Startup Dialogue Information to Standard Out
+echo
+echo "CMAQ Processing of Day ${GDAY} Began at `date`"
+echo
+
+# everything should be set up now, so run the executable
+ls -l $EXEDIR/$EXEC
+size $EXEDIR/$EXEC
+
+date
+mpirun -np $NPROCS $EXEDIR/$EXEC
+date
+
+#> Abort script if abnormal termination
+if ( ! -e $S_CGRID ) then
+    echo ""
+    echo "**************************************************************"
+    echo "** Runscript Detected an Error: CGRID file was not written. **"
+    echo "**   This indicates that CMAQ was interrupted or an issue   **"
+    echo "**   exists with writing output. The runscript will now     **"
+    echo "**   abort rather than proceeding to subsequent days.       **"
+    echo "**************************************************************"
+    break
+endif
+
+  #> Print Concluding Text
+echo 
+echo "CMAQ Processing of Day ${GDAY} Finished at `date`"
+echo
+echo "\\\\\=====\\\\\=====\\\\\=====\\\\\=====/////=====/////=====/////=====/////"
+echo
+  
+mkdir -p $LOGDIR/$STDATE/
+ls -l $LOGDIR/$STDATE/
+mkdir -p $OUTDIR/$STDATE/
+ls -l $OUTDIR/$STDATE/
+
+#> Save Log Files and Move on to Next Simulation Day
+mv CTM_LOG_*.${CTM_APPL} $LOGDIR/$STDATE/
+
+#> Save Emissions Diag File
+mv $OUTDIR/CCTM_DESID1_*_${CTM_APPL}.nc $OUTDIR/$STDATE/
+
+setenv NEW_START false
+@ today = $today + 1
+date
+
+
+end #loop back to next day
+
+exit
+
